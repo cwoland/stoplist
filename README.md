@@ -1,36 +1,91 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Стоп-лист кухни
 
-## Getting Started
+Панель стоп-листа меню смены: менеджер зала видит позиции, фильтрует их по цеху и статусу, ставит в стоп-лист с причиной и сроком и возвращает в продажу. 
 
-First, run the development server:
+## Запуск
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Приложение откроется на <http://localhost:3000>. 
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Стек
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Next.js 16 (App Router), React 19, TypeScript (strict), TanStack Query 5, Zustand 5, React Hook Form + Zod 4, Tailwind CSS 4, Motion (текущее имя Framer Motion), ESLint + Prettier, Vitest.
 
-## Learn More
+## Как разложены слои
 
-To learn more about Next.js, take a look at the following resources:
+```
+app/
+  layout.tsx                  шрифт, QueryClientProvider, тостер
+  page.tsx                    серверный компонент: читает searchParams → фильтры
+  providers.tsx               QueryClientProvider (клиентский)
+  api/menu-items/**           route handlers: GET список, POST stop, POST resume
+features/stop-list/
+  api/menu-api.ts             транспорт: три функции, знающие URL'ы
+  model/queries.ts            ключи кэша и queryOptions
+  model/use-stop-item.ts      мутации stop/resume с оптимистикой и откатом
+  model/filters.ts            чтение/запись фильтров в URL (общий код сервера и клиента)
+  model/use-filters.ts        запись фильтров в URL через router.push
+  model/stop-rules.ts         бизнес-правила: validateUntil, canResume
+  model/stop-item-schema.ts   Zod-схема payload'а — одна на форму и route handler
+  model/stop-item-form.ts     схема формы (обёртка над общей) и её defaults
+  model/stop-panel-store.ts   Zustand: какая позиция открыта в панели
+  ui/StopListScreen.tsx       единственный компонент, где сходятся данные и UI
+  ui/StopListTable.tsx        презентация списка, без запросов
+  ui/StopReasonPanel.tsx      боковая панель с формой
+  ui/Filters.tsx              презентация фильтров
+shared/
+  api/                        fetch-обёртка и ApiError
+  ui/                         Button, Select, Input, Field, Badge, Notice, Toaster (+ Zustand-стор тостов)
+server/
+  menu-store.ts               in-memory хранилище и сид
+  mock-network.ts             задержка и вероятность ошибки
+types/menu.ts                 доменные типы
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Зависимости направлены в одну сторону: `ui → model → api → shared`. UI-компоненты не знают про `fetch` и ключи кэша; `model` не знает про вёрстку; `server/` и `app/api` импортируют из `features/*/model` только правила и схемы — те же, что использует клиент.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Граница сервер / клиент
 
-## Deploy on Vercel
+Серверных компонентов два: `layout.tsx` и `page.tsx`. `page.tsx` — единственное место, где читаются `searchParams`: он превращает их в типизированный объект `StopListFilters` (невалидные значения молча отбрасываются) и передаёт пропсом в клиентский `StopListScreen`. Всё, что ниже, — клиентское: список живёт в TanStack Query, панель и тосты — в Zustand, форма — в React Hook Form.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Так URL остаётся единственным источником правды для фильтров: изменение фильтра — это `router.push` с новым query, после чего Next перерисовывает `page.tsx` с новыми `searchParams`. Перезагрузка и кнопка «назад» работают без дополнительной синхронизации, а на первом рендере селекты уже стоят в нужном положении.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Данные списка на сервере не префетчатся сознательно: по ТЗ `GET` идёт с искусственной задержкой и обязательны состояния загрузки — они должны быть видны, а не спрятаны за SSR. В боевом проекте я бы префетчил список в `page.tsx` через `HydrationBoundary`, обращаясь к хранилищу напрямую, минуя HTTP.
+
+## Архитектурные решения
+
+Бизнес-правила (`validateUntil`, `canResume`) — чистые функции без зависимостей, а Zod-схема, форма и route handler'ы их только оборачивают: правило существует в одном месте, а клиентская и серверная проверки не могут разойтись. Хранилище `server/menu-store.ts` намеренно «тупое» — только чтение и запись, решение «можно ли вернуть в продажу при остатке 0» принимает route handler через `canResume`. Оптимистичные мутации патчат **все** закэшированные списки по префиксу ключа, а не один текущий, потому что одна позиция лежит в нескольких списках (разные фильтры) и после «назад» они не должны расходиться. Zustand хранит только UI-состояние (id позиции в панели, режим панели, тосты) — серверные данные в сторе не дублируются, метка «сохраняется» берётся из `useMutationState`.
+
+Ещё несколько решений помельче:
+
+- **Откат — по одной позиции**, а не снимком всего списка: если две мутации идут параллельно и одна падает, вторая не теряет свою оптимистику. Инвалидация списка запускается только последней активной мутацией и не ожидается — метка «сохраняется» гаснет по ответу сервера, сверка с сервером идёт в фоне.
+- **Ошибка фонового рефетча не убирает таблицу.** Если после мутации упал `GET`, у запроса одновременно `isError` и старые `data`; экран показывает таблицу и строку «Не удалось обновить список», а не заменяет всё блоком ошибки.
+- **`keepPreviousData` при смене фильтра**: старый список приглушается, пока грузится новый, вместо мигания скелетоном.
+- **Схема формы ≠ схема payload'а.** Форма оперирует режимом срока («до конца смены» / время) и значением `datetime-local`; `stopItemFormSchema` собирает из них `StopItemPayload` через `transform`, переиспользуя `reason` из общей схемы и `validateUntil`. Срок вынесен во вложенный объект, потому что Zod не запускает `superRefine` объекта, если невалидно любое из его полей, — иначе ошибка времени не показывалась бы, пока не исправлена причина.
+- **Кнопка «Вернуть в продажу» при остатке 0** сделана через `aria-disabled`, а не `disabled`: у нативно отключённой кнопки браузеры не показывают `title`, а ТЗ просит подсказку.
+
+## Валидация и правила
+
+| Правило | Клиент | Сервер |
+| --- | --- | --- |
+| Причина обязательна, одно из четырёх значений | `stopItemSchema.shape.reason` (RHF, blur + submit) | `stopItemSchema` в `POST /stop` → 400 |
+| Срок: `null` либо время в будущем, ≤ 24 ч, шаг 15 мин | `validateUntil` через схему формы | тот же `validateUntil` через `stopItemSchema` |
+| Остаток 0 → нельзя вернуть в продажу | `canResume` → кнопка заблокирована с подсказкой | `canResume` в `POST /resume` → 409 |
+| Повторная постановка | панель открывается в режиме редактирования | `POST /stop` перезаписывает причину и срок |
+
+## Мок-бэкенд
+
+`server/mock-network.ts`: мутации отвечают через 600 мс и в 20 % случаев возвращают 500; `GET` отвечает через 800 мс и в 10 % случаев — 503 (чтобы состояние ошибки было живым, а не только теоретическим).
+
+**In-memory на Vercel.** Данные лежат в `Map` в памяти serverless-функции. Это значит: после холодного старта или у другого инстанса список возвращается к сиду, а изменения из одной вкладки могут не увидеться в другой. Для тестового задания это ожидаемое поведение. В dev-режиме `Map` хранится на `globalThis`, чтобы состояние переживало HMR.
+
+## Допущения
+
+- При отправке формы панель остаётся открытой с лоадером на кнопке до ответа сервера, при этом строка в таблице меняет статус сразу (панель боковая, список виден). Так закрываются оба требования — «лоадер на кнопке» и «статус меняется, не дожидаясь ответа»; при ошибке форма остаётся заполненной, можно повторить.
+- Фильтрация выполняется на сервере (`GET /api/menu-items?shop=&status=`): поэтому позиция, поставленная в стоп при фильтре «в продаже», остаётся в списке с новым статусом до фонового рефетча и только потом исчезает — без резкого скачка списка в момент клика.
+- Время в поле срока вводится в локальной зоне браузера и отправляется в UTC (ISO). Проверка шага 15 минут выполняется по UTC-таймстампу.
+- Проверка `stock` на сервере при `POST /stop` не делается: остановить можно любую позицию.
