@@ -2,7 +2,10 @@ import { z } from 'zod';
 import type { MenuItemStatusKind, Shop } from '@/types/menu';
 
 export const SHOPS = ['kitchen', 'bar', 'pastry'] as const satisfies readonly Shop[];
-export const STATUS_KINDS = ['available', 'stopped'] as const satisfies readonly MenuItemStatusKind[];
+export const STATUS_KINDS = [
+  'available',
+  'stopped',
+] as const satisfies readonly MenuItemStatusKind[];
 
 export const SHOP_LABELS: Record<Shop, string> = {
   kitchen: 'Кухня',
@@ -38,4 +41,16 @@ export function filtersToSearch(filters: StopListFilters): string {
   if (filters.status) params.set('status', filters.status);
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+export function updateFilter(
+  filters: StopListFilters,
+  key: keyof StopListFilters,
+  rawValue: string,
+): StopListFilters {
+  return parseFilters({ ...filters, [key]: rawValue });
+}
+
+export function hasActiveFilters(filters: StopListFilters): boolean {
+  return Boolean(filters.shop || filters.status);
 }

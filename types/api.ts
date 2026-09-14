@@ -1,4 +1,4 @@
 export interface ApiErrorBody {
-    error: string;
-    fieldErrors?: Record<string, string[]>;
+  error: string;
+  fieldErrors?: Record<string, string[]>;
 }
